@@ -10,6 +10,7 @@ mkdir -p "$OUTPUT_DIR"
 echo "Preparing patches from $ZYN_BANKS..."
 
 find "$ZYN_BANKS" -name "*.xiz" | while read -r patch; do
+    echo $patch
     # Get filename without extension
     filename=$(basename "$patch" .xiz)
     
@@ -18,7 +19,10 @@ find "$ZYN_BANKS" -name "*.xiz" | while read -r patch; do
     
     # Lowercase and replace non-alphanumeric (except underscores) with underscores
     safe_name=$(echo "$clean_name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_]+/_/g' | sed -E 's/_+/_/g' | sed -E 's/^_//;s/_$//')
-    
+    echo $safe_name
+    if [ "${safe_name}" = "" ]; then
+      continue 
+    fi
     # Gunzip the file into the output directory
     zcat "$patch" > "$OUTPUT_DIR/$safe_name.xiz" 2>/dev/null || cp "$patch" "$OUTPUT_DIR/$safe_name.xiz"
 done

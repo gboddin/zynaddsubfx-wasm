@@ -31,6 +31,9 @@ EM_LDFLAGS := -s ALLOW_MEMORY_GROWTH=1
 all: check-tools deps reset-submodule patches patch core entry
 
 check-tools:
+	@command -v python3 >/dev/null 2>&1 || { echo >&2 "python3 not found. Install Python 3."; exit 1; }
+	@command -v cmake >/dev/null 2>&1 || { echo >&2 "cmake not found."; exit 1; }
+	@command -v node >/dev/null 2>&1 || { echo >&2 "nodejs not found. Install Nodejs."; exit 1; }
 	@command -v emcc >/dev/null 2>&1 || { echo >&2 "emcc not found. Install Emscripten."; exit 1; }
 	@command -v wget >/dev/null 2>&1 || { echo >&2 "wget not found."; exit 1; }
 	@mkdir -p $(DEPS_SRC_DIR) $(DEPS_DIR)/lib $(DEPS_DIR)/include
@@ -82,6 +85,8 @@ $(DEPS_DIR)/lib/libsndfile.a:
 patches: submodule
 	@echo "Preparing internal patch banks..."
 	@./scripts/prepare_patches.sh
+	@echo "Generating patch list JSON..."
+	@python3 scripts/generate_patch_list.py
 
 # --- Submodules & Patching ---
 submodule:
@@ -135,7 +140,8 @@ entry: core patches
 		-DZYN_BUILD_DIR=$(ZYN_BUILD) \
 		-DDEPS_INSTALL_DIR=$(DEPS_DIR)
 	@cd $(ENTRY_BUILD) && $(EMMAKE) make -j$(shell nproc)
-	@find $(ENTRY_BUILD)
+	@cp $(ENTRY_BUILD)/zyn_wasm.js web/
+	@cp $(ENTRY_BUILD)/zyn_wasm.wasm web/
 
 # --- Cleanup ---
 clean:

@@ -3,7 +3,8 @@ patches/
 bin/
 deps/
 *.wasm
-*.js
+web/zyn_wasm.js
+wasm_entry/build/
 !wasm_entry/zyn_wasm_api.cpp
 !wasm_entry/zyn_wasm.h
 .DS_Store

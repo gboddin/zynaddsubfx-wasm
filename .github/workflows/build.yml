@@ -18,7 +18,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: build-artifacts
-        path: wasm_entry/build/
+        path: web/ 
         if-no-files-found: error
 
   release:
@@ -33,11 +33,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: build-artifacts
-          path: wasm_entry/build/
-
+          path: web/
+      - name: Create Zip Archive
+        run: zip -r web.zip web/
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            wasm_entry/build/zyn_wasm.wasm
-            wasm_entry/build/zyn_wasm.js
+            web/zyn_wasm.wasm
+            web/zyn_wasm.js
+            web.zip
