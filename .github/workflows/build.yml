@@ -1,0 +1,43 @@
+name: C/C++ CI
+on:
+  push:
+    branches: [ "master","develop" ]
+  release:
+    types: [ "published" ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: mymindstorm/setup-emsdk@v15
+    - name: prepare-builder
+      run: sudo apt-get update && sudo apt-get install -y  wget nodejs
+    - name: make
+      run: make
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts
+        path: wasm_entry/build/
+        if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: wasm_entry/build/
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wasm_entry/build/zyn_wasm.wasm
+            wasm_entry/build/zyn_wasm.js
