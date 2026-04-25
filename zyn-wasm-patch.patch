@@ -1,0 +1,488 @@
+diff --git a/src/Misc/Allocator.cpp b/src/Misc/Allocator.cpp
+index b05c690c..28cb943f 100644
+--- a/src/Misc/Allocator.cpp
++++ b/src/Misc/Allocator.cpp
+@@ -51,13 +51,28 @@ Allocator::Allocator(void) : transaction_active()
+ {
+     impl = new AllocatorImpl;
+     size_t default_size = 16*1024*1024;
++#ifdef __EMSCRIPTEN__
++    default_size = 8*1024*1024; // 8MB pool for WASM is more reasonable than 16MB
++#endif
+     impl->pools = (next_t*)malloc(default_size);
++    if(!impl->pools) {
++        fprintf(stderr, "FATAL: Could not allocate memory pool for Allocator (%zu bytes)\n", default_size);
++        // Fallback to a smaller pool if 8MB failed
++        default_size = 1024 * 1024;
++        impl->pools = (next_t*)malloc(default_size);
++        if(!impl->pools) {
++            fprintf(stderr, "FATAL: Even 1MB failed. Out of memory.\n");
++            exit(1);
++        }
++    }
+     impl->pools->next = 0x0;
+     impl->pools->pool_size = default_size;
+     size_t off = tlsf_size() + tlsf_pool_overhead() + sizeof(next_t);
+-    //printf("Generated Memory Pool with '%p'\n", impl->pools);
+     impl->tlsf = tlsf_create_with_pool(((char*)impl->pools)+off, default_size-2*off);
+-    //printf("Allocator(%p)\n", impl);
++    if(!impl->tlsf) {
++        fprintf(stderr, "FATAL: Could not create tlsf pool\n");
++        exit(1);
++    }
+ }
+ 
+ Allocator::~Allocator(void)
+diff --git a/src/Misc/Master.cpp b/src/Misc/Master.cpp
+index ab805a35..abeecc83 100644
+--- a/src/Misc/Master.cpp
++++ b/src/Misc/Master.cpp
+@@ -778,6 +778,7 @@ Master::Master(const SYNTH_T &synth_, Config* config)
+     frozenState(false), pendingMemory(false),
+     synth(synth_), gzip_compression(config->cfg.GzipCompression)
+ {
++    fprintf(stderr, "Master::Master: starting\n");
+     SaveFullXml=(config->cfg.SaveFullXml==1);
+     bToU = NULL;
+     uToB = NULL;
+@@ -798,6 +799,7 @@ Master::Master(const SYNTH_T &synth_, Config* config)
+     midi.backend  = [this](const char *msg) {applyOscEvent(msg);};
+     automate.backend  = [this](const char *msg) {applyOscEvent(msg);};
+ 
++    fprintf(stderr, "Master::Master: creating allocator\n");
+     memory = new AllocatorClass();
+     swaplr = 0;
+     off  = 0;
+@@ -806,6 +808,7 @@ Master::Master(const SYNTH_T &synth_, Config* config)
+     bufr = new float[synth.buffersize];
+ 
+     last_xmz[0] = 0;
++    fprintf(stderr, "Master::Master: creating FFTwrapper\n");
+     fft = new FFTwrapper(synth.oscilsize);
+ 
+     shutup = 0;
+@@ -817,6 +820,7 @@ Master::Master(const SYNTH_T &synth_, Config* config)
+ 
+ 
+     ScratchString ss;
++    fprintf(stderr, "Master::Master: creating parts\n");
+     for(int npart = 0; npart < NUM_MIDI_PARTS; ++npart)
+     {
+         part[npart] = new Part(*memory, synth, time, sync, config->cfg.GzipCompression,
+@@ -832,20 +836,24 @@ Master::Master(const SYNTH_T &synth_, Config* config)
+     smoothing.reset_on_next_apply( true ); /* necessary to make CI tests happy, otherwise of no practical use */
+ 
+     //Insertion Effects init
++    fprintf(stderr, "Master::Master: creating insertion effects\n");
+     for(int nefx = 0; nefx < NUM_INS_EFX; ++nefx)
+         insefx[nefx] = new EffectMgr(*memory, synth, 1, &time, sync);
+ 
+     //System Effects init
++    fprintf(stderr, "Master::Master: creating system effects\n");
+     for(int nefx = 0; nefx < NUM_SYS_EFX; ++nefx)
+         sysefx[nefx] = new EffectMgr(*memory, synth, 0, &time, sync);
+ 
+     //Note Visualization
+     memset(activeNotes, 0, sizeof(activeNotes));
+ 
++    fprintf(stderr, "Master::Master: defaults\n");
+     defaults();
+ 
+     mastercb = 0;
+     mastercb_ptr = 0;
++    fprintf(stderr, "Master::Master: complete\n");
+ }
+ 
+ bool Master::applyOscEvent(const char *msg, float *outl, float *outr,
+diff --git a/src/Misc/MiddleWare.cpp b/src/Misc/MiddleWare.cpp
+index 4210c5ae..0f7373b6 100644
+--- a/src/Misc/MiddleWare.cpp
++++ b/src/Misc/MiddleWare.cpp
+@@ -306,6 +306,7 @@ struct NonRtObjStore
+     void extractMaster(Master *master)
+     {
+         for(int i=0; i < NUM_MIDI_PARTS; ++i) {
++            fprintf(stderr, "NonRtObjStore: extracting part %d\n", i);
+             extractPart(master->part[i], i);
+         }
+     }
+@@ -864,10 +865,14 @@ public:
+ 
+     void updateResources(Master *m)
+     {
++        fprintf(stderr, "NonRtObjStore: clearing\n");
+         obj_store.clear();
++        fprintf(stderr, "NonRtObjStore: extracting master\n");
+         obj_store.extractMaster(m);
++        fprintf(stderr, "NonRtObjStore: extracting kits\n");
+         for(int i=0; i<NUM_MIDI_PARTS; ++i)
+             kits.extractPart(m->part[i], i);
++        fprintf(stderr, "NonRtObjStore: complete\n");
+     }
+ 
+     //If currently broadcasting messages
+@@ -1911,17 +1916,21 @@ MiddleWareImpl::MiddleWareImpl(MiddleWare *mw, SYNTH_T synth_,
+     uToB = new rtosc::ThreadLink(4096*2*16,1024/16);
+     midi_mapper.base_ports = &Master::ports;
+     midi_mapper.rt_cb      = [this](const char *msg){handleMsg(msg);};
+-    if(preferrred_port != -1)
++    if(preferrred_port != -1 && preferrred_port != 0)
+         server = lo_server_new_with_proto(to_s(preferrred_port).c_str(),
+                                           LO_UDP, liblo_error_cb);
+-    else
++    else if(preferrred_port != 0)
+         server = lo_server_new_with_proto(NULL, LO_UDP, liblo_error_cb);
++    else
++        server = NULL; // Explicitly disabled for port 0 (WASM/Worklet case)
+ 
+     if(server) {
+         lo_server_add_method(server, NULL, NULL, handler_function, mw);
+         fprintf(stderr, "lo server running on %d\n", lo_server_get_port(server));
+-    } else
++    } else if (preferrred_port != 0)
+         fprintf(stderr, "lo server could not be started :-/\n");
++    else
++        fprintf(stderr, "lo server disabled (port 0)\n");
+ 
+ 
+     //dummy callback for starters
+@@ -1930,10 +1939,13 @@ MiddleWareImpl::MiddleWareImpl(MiddleWare *mw, SYNTH_T synth_,
+     idle = 0;
+     idle_ptr = 0;
+ 
++    fprintf(stderr, "MiddleWareImpl: recreating minimal master\n");
+     recreateMinimalMaster();
++    fprintf(stderr, "MiddleWareImpl: generating OSC interface\n");
+     osc    = GUI::genOscInterface(mw);
+ 
+     //Grab objects of interest from master
++    fprintf(stderr, "MiddleWareImpl: updating resources\n");
+     updateResources(master);
+ 
+     //Null out Load IDs
+@@ -1943,6 +1955,7 @@ MiddleWareImpl::MiddleWareImpl(MiddleWare *mw, SYNTH_T synth_,
+     }
+ 
+     //Setup Undo
++    fprintf(stderr, "MiddleWareImpl: setting up undo\n");
+     undo.setCallback([this](const char *msg) {
+            // printf("undo callback <%s>\n", msg);
+             char buf[1024];
+@@ -1953,9 +1966,11 @@ MiddleWareImpl::MiddleWareImpl(MiddleWare *mw, SYNTH_T synth_,
+             handleMsg(buf);
+             });
+ 
+-    start_time = std::chrono::steady_clock::now();
+-
++    fprintf(stderr, "MiddleWareImpl: setting start time\n");
++    // start_time = std::chrono::steady_clock::now();
++    
+     offline = false;
++    fprintf(stderr, "MiddleWareImpl: constructor finished\n");
+ }
+ 
+ void MiddleWareImpl::discardAllbToUButHandleFree()
+diff --git a/src/Nio/ZynSema.h b/src/Nio/ZynSema.h
+index 32dbc8f1..19f0fa72 100644
+--- a/src/Nio/ZynSema.h
++++ b/src/Nio/ZynSema.h
+@@ -12,9 +12,11 @@
+ #ifndef ZYNSEMA_H
+ #define ZYNSEMA_H
+ 
+-#if defined __APPLE__ || defined WIN32
++#if defined __APPLE__ || defined WIN32 || defined __EMSCRIPTEN__
+ 
++#ifndef __EMSCRIPTEN__
+ #include <pthread.h>
++#endif
+ 
+ namespace zyn {
+ 
+@@ -27,35 +29,50 @@ public:
+ 
+     ~ZynSema (void)
+     {
++#ifndef __EMSCRIPTEN__
+         pthread_mutex_destroy (&_mutex);
+         pthread_cond_destroy (&_cond);
++#endif
+     }
+ 
+     int init (int, int v)
+     {
+         _count = v;
++#ifndef __EMSCRIPTEN__
+         return pthread_mutex_init (&_mutex, 0) || pthread_cond_init (&_cond, 0);
++#else
++        return 0;
++#endif
+     }
+ 
+     int post (void)
+     {
++#ifndef __EMSCRIPTEN__
+         pthread_mutex_lock (&_mutex);
+         if (++_count == 1) pthread_cond_signal (&_cond);
+         pthread_mutex_unlock (&_mutex);
++#else
++        ++_count;
++#endif
+         return 0;
+     }
+ 
+     int wait (void)
+     {
++#ifndef __EMSCRIPTEN__
+         pthread_mutex_lock (&_mutex);
+         while (_count < 1) pthread_cond_wait (&_cond, &_mutex);
+         --_count;
+         pthread_mutex_unlock (&_mutex);
++#else
++        if (_count > 0) --_count;
++#endif
+         return 0;
+     }
+ 
+     int trywait (void)
+     {
++#ifndef __EMSCRIPTEN__
+         if (pthread_mutex_trylock (&_mutex)) return -1;
+         if (_count < 1)
+         {
+@@ -65,6 +82,11 @@ public:
+         --_count;
+         pthread_mutex_unlock (&_mutex);
+         return 0;
++#else
++        if (_count < 1) return -1;
++        --_count;
++        return 0;
++#endif
+     }
+ 
+     int getvalue (void) const
+@@ -75,8 +97,10 @@ public:
+ 
+ private:
+     int              _count;
++#ifndef __EMSCRIPTEN__
+     pthread_mutex_t  _mutex;
+     pthread_cond_t   _cond;
++#endif
+ };
+ 
+ }
+diff --git a/src/Params/PADnoteParameters.cpp b/src/Params/PADnoteParameters.cpp
+index b7fd7ddc..6704888d 100644
+--- a/src/Params/PADnoteParameters.cpp
++++ b/src/Params/PADnoteParameters.cpp
+@@ -999,9 +999,9 @@ int PADnoteParameters::sampleGenerator(PADnoteParameters::callback cb,
+     if(oscilgen->needPrepare())
+         oscilgen->prepare();
+ 
+-#ifdef WIN32
++#if defined(WIN32) || defined(__EMSCRIPTEN__)
+     //Temporarily disable multi-threading here as C++11 threads are broken on
+-    //mingw cross compilation
++    //mingw cross compilation or non-pthread WASM
+     thread_cb(1,0);
+ #else
+     unsigned nthreads = std::min(max_threads,
+diff --git a/src/Plugin/AlienWah/CMakeLists.txt b/src/Plugin/AlienWah/CMakeLists.txt
+index bff54c02..5120e7e9 100644
+--- a/src/Plugin/AlienWah/CMakeLists.txt
++++ b/src/Plugin/AlienWah/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynAlienWah_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynAlienWah.lv2/)
+ install(TARGETS ZynAlienWah_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynAlienWah_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynAlienWah_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynAlienWah_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynAlienWah_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynAlienWah_lv2 lv2-ttl-generator)
++    add_dependencies(ZynAlienWah_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/Chorus/CMakeLists.txt b/src/Plugin/Chorus/CMakeLists.txt
+index 70166868..a9888da5 100644
+--- a/src/Plugin/Chorus/CMakeLists.txt
++++ b/src/Plugin/Chorus/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynChorus_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynChorus.lv2/)
+ install(TARGETS ZynChorus_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynChorus_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynChorus_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynChorus_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynChorus_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynChorus_lv2 lv2-ttl-generator)
++    add_dependencies(ZynChorus_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/Distortion/CMakeLists.txt b/src/Plugin/Distortion/CMakeLists.txt
+index cca2689c..32a10f07 100644
+--- a/src/Plugin/Distortion/CMakeLists.txt
++++ b/src/Plugin/Distortion/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynDistortion_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynDistortion.lv2/)
+ install(TARGETS ZynDistortion_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynDistortion_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynDistortion_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynDistortion_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynDistortion_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynDistortion_lv2 lv2-ttl-generator)
++    add_dependencies(ZynDistortion_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/DynamicFilter/CMakeLists.txt b/src/Plugin/DynamicFilter/CMakeLists.txt
+index 50d92bbf..3ea20fcb 100644
+--- a/src/Plugin/DynamicFilter/CMakeLists.txt
++++ b/src/Plugin/DynamicFilter/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynDynamicFilter_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynDynamicFilter.lv2/)
+ install(TARGETS ZynDynamicFilter_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynDynamicFilter_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynDynamicFilter_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynDynamicFilter_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynDynamicFilter_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynDynamicFilter_lv2 lv2-ttl-generator)
++    add_dependencies(ZynDynamicFilter_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/Echo/CMakeLists.txt b/src/Plugin/Echo/CMakeLists.txt
+index 153f4599..731eb7e8 100644
+--- a/src/Plugin/Echo/CMakeLists.txt
++++ b/src/Plugin/Echo/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynEcho_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynEcho.lv2/)
+ install(TARGETS ZynEcho_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynEcho_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynEcho_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynEcho_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynEcho_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynEcho_lv2 lv2-ttl-generator)
++    add_dependencies(ZynEcho_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/Phaser/CMakeLists.txt b/src/Plugin/Phaser/CMakeLists.txt
+index 971e041f..75601f08 100644
+--- a/src/Plugin/Phaser/CMakeLists.txt
++++ b/src/Plugin/Phaser/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynPhaser_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynPhaser.lv2/)
+ install(TARGETS ZynPhaser_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynPhaser_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynPhaser_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynPhaser_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynPhaser_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynPhaser_lv2 lv2-ttl-generator)
++    add_dependencies(ZynPhaser_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/Reverb/CMakeLists.txt b/src/Plugin/Reverb/CMakeLists.txt
+index f6322f7d..4c7f7f06 100644
+--- a/src/Plugin/Reverb/CMakeLists.txt
++++ b/src/Plugin/Reverb/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynReverb_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynReverb.lv2/)
+ install(TARGETS ZynReverb_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynReverb_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynReverb_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynReverb_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynReverb_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynReverb_lv2 lv2-ttl-generator)
++    add_dependencies(ZynReverb_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/Reverse/CMakeLists.txt b/src/Plugin/Reverse/CMakeLists.txt
+index 4f7bc1f6..d65e43c7 100644
+--- a/src/Plugin/Reverse/CMakeLists.txt
++++ b/src/Plugin/Reverse/CMakeLists.txt
+@@ -27,11 +27,13 @@ endif()
+ install(TARGETS ZynReverse_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynReverse.lv2/)
+ install(TARGETS ZynReverse_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+ 
+-add_custom_command(TARGET ZynReverse_lv2 POST_BUILD
+-    COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynReverse_lv2>
+-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
++if(NOT EMSCRIPTEN)
++    add_custom_command(TARGET ZynReverse_lv2 POST_BUILD
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynReverse_lv2>
++        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+ 
+-add_dependencies(ZynReverse_lv2 lv2-ttl-generator)
++    add_dependencies(ZynReverse_lv2 lv2-ttl-generator)
++endif()
+ 
+ install(FILES
+ 	${CMAKE_CURRENT_BINARY_DIR}/lv2/manifest.ttl
+diff --git a/src/Plugin/ZynAddSubFX/CMakeLists.txt b/src/Plugin/ZynAddSubFX/CMakeLists.txt
+index 9f036f26..dcd3c38b 100644
+--- a/src/Plugin/ZynAddSubFX/CMakeLists.txt
++++ b/src/Plugin/ZynAddSubFX/CMakeLists.txt
+@@ -197,14 +197,10 @@ if(ZestGui AND NOT ${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
+     endif()
+ endif()
+ 
+-if(NOT ${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
+-    install(TARGETS ZynAddSubFX_lv2 LIBRARY DESTINATION ${PluginLibDir}/lv2/ZynAddSubFX.lv2/)
+-    install(TARGETS ZynAddSubFX_vst LIBRARY DESTINATION ${PluginLibDir}/vst/)
+-
++if(NOT EMSCRIPTEN)
+     add_custom_command(TARGET ZynAddSubFX_lv2 POST_BUILD
+-        COMMAND ../../lv2-ttl-generator $<TARGET_FILE:ZynAddSubFX_lv2>
++        COMMAND node ../../lv2-ttl-generator.js $<TARGET_FILE:ZynAddSubFX_lv2>
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lv2)
+-
+     add_dependencies(ZynAddSubFX_lv2 lv2-ttl-generator)
+ endif()
+ 

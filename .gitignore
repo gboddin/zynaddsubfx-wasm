@@ -1,0 +1,12 @@
+build/
+patches/
+bin/
+deps/
+*.wasm
+*.js
+!wasm_entry/zyn_wasm_api.cpp
+!wasm_entry/zyn_wasm.h
+.DS_Store
+.vscode/
+build-deps/
+build-zyn/
