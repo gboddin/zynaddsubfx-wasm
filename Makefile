@@ -42,7 +42,7 @@ $(DEPS_DIR)/lib/libz.a:
 	@echo "Building zlib..."
 	@cd $(DEPS_SRC_DIR) && wget -nc $(ZLIB_URL)
 	@cd $(DEPS_SRC_DIR) && tar xzf zlib-1.3.2.tar.gz
-	@cd $(DEPS_SRC_DIR)/zlib-1.3.2 && emconfigure ./configure --prefix=$(DEPS_DIR) --static
+	@cd $(DEPS_SRC_DIR)/zlib-1.3.2 && emconfigure ./configure --host=wasm32-unknown-emscripten --prefix=$(DEPS_DIR) --static
 	@cd $(DEPS_SRC_DIR)/zlib-1.3.2 && $(EMMAKE) make -j $(shell nproc) install
 
 fftw: $(DEPS_DIR)/lib/libfftw3f.a
@@ -50,7 +50,7 @@ $(DEPS_DIR)/lib/libfftw3f.a:
 	@echo "Building FFTW..."
 	@cd $(DEPS_SRC_DIR) && wget -nc $(FFTW_URL)
 	@cd $(DEPS_SRC_DIR) && tar xzf fftw-3.3.11.tar.gz
-	@cd $(DEPS_SRC_DIR)/fftw-3.3.11 && emconfigure ./configure --prefix=$(DEPS_DIR) --enable-float --disable-fortran --disable-threads --enable-static
+	@cd $(DEPS_SRC_DIR)/fftw-3.3.11 && emconfigure ./configure --host=wasm32-unknown-emscripten --prefix=$(DEPS_DIR) --enable-float --disable-fortran --disable-threads --enable-static
 	@cd $(DEPS_SRC_DIR)/fftw-3.3.11 && $(EMMAKE) make -j $(shell nproc) install
 
 liblo: $(DEPS_DIR)/lib/liblo.a
@@ -58,7 +58,7 @@ $(DEPS_DIR)/lib/liblo.a:
 	@echo "Building liblo..."
 	@cd $(DEPS_SRC_DIR) && wget -nc $(LIBLO_URL)
 	@cd $(DEPS_SRC_DIR) && tar xzf liblo-0.34.tar.gz
-	@cd $(DEPS_SRC_DIR)/liblo-0.34 && emconfigure ./configure --prefix=$(DEPS_DIR) --enable-static --disable-shared --disable-doc
+	@cd $(DEPS_SRC_DIR)/liblo-0.34 && emconfigure ./configure --host=wasm32-unknown-emscripten --prefix=$(DEPS_DIR) --enable-static --disable-shared --disable-doc
 	@cd $(DEPS_SRC_DIR)/liblo-0.34 && $(EMMAKE) make -j $(shell nproc) install
 
 mxml: $(DEPS_DIR)/lib/libmxml4.a
@@ -66,7 +66,7 @@ $(DEPS_DIR)/lib/libmxml4.a:
 	@echo "Building mxml..."
 	@cd $(DEPS_SRC_DIR) && wget -nc $(MXML_URL)
 	@cd $(DEPS_SRC_DIR) && tar xzf mxml-4.0.4.tar.gz
-	@cd $(DEPS_SRC_DIR)/mxml-4.0.4 && emconfigure ./configure --prefix=$(DEPS_DIR) --enable-static --disable-shared
+	@cd $(DEPS_SRC_DIR)/mxml-4.0.4 && emconfigure ./configure --host=wasm32-unknown-emscripten --prefix=$(DEPS_DIR) --enable-static --disable-shared
 	@cd $(DEPS_SRC_DIR)/mxml-4.0.4 && $(EMMAKE) make -j $(shell nproc) install
 
 libsndfile: $(DEPS_DIR)/lib/libsndfile.a
@@ -74,7 +74,7 @@ $(DEPS_DIR)/lib/libsndfile.a:
 	@echo "Building libsndfile..."
 	@cd $(DEPS_SRC_DIR) && wget -nc $(LIBSNDFILE_URL)
 	@cd $(DEPS_SRC_DIR) && tar xJf libsndfile-1.2.2.tar.xz
-	@cd $(DEPS_SRC_DIR)/libsndfile-1.2.2 && emconfigure ./configure --prefix=$(DEPS_DIR) --enable-static --disable-shared --disable-external-libs --disable-sqlite
+	@cd $(DEPS_SRC_DIR)/libsndfile-1.2.2 && emconfigure ./configure --host=wasm32-unknown-emscripten --prefix=$(DEPS_DIR) --enable-static --disable-shared --disable-external-libs --disable-sqlite
 	@cd $(DEPS_SRC_DIR)/libsndfile-1.2.2 && $(EMMAKE) make -j $(shell nproc) install
 
 
@@ -105,13 +105,24 @@ core: patch
 		-DGuiModule=off \
 		-DZYN_SYSTEM_RTOSC=OFF \
 		-DCompileTests=OFF \
+		-DOssEnable=OFF \
+                -DAlsaEnable=OFF \
+                -DJackEnable=OFF \
+		-DPluginEnable=OFF \
+		-DDssiEnable=OFF \
+		-DLashEnable=OFF \
+		-DCompileTests=OFF \
+		-DBuildForAMD_X86_64=OFF \
+		-DBuildForCore2_X86_64=OFF \
+		-DDemoMode=OFF \
+		-DDBUILD_RTOSC_EXAMPLES=OFF \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_PREFIX_PATH=$(DEPS_DIR) \
                 -DZLIB_INCLUDE_DIR=$(DEPS_DIR)/include \
                 -DZLIB_LIBRARY=$(DEPS_DIR)/lib/libz.a \
 		-DCMAKE_CXX_FLAGS="$(EM_FLAGS)" \
 		-DCMAKE_C_FLAGS="$(EM_FLAGS)" \
-		-DCMAKE_EXE_LINKER_FLAGS="$(EM_LDFLAGS)"
+		-DCMAKE_EXE_LINKER_FLAGS="$(EM_LDFLAGS)" -L
 	@echo "Building ZynAddSubFX core..."
 	@cd $(ZYN_BUILD) && $(EMMAKE) make -j$(shell nproc) zynaddsubfx_core zynaddsubfx_nio zynaddsubfx_gui_bridge
 
@@ -124,8 +135,7 @@ entry: core patches
 		-DZYN_BUILD_DIR=$(ZYN_BUILD) \
 		-DDEPS_INSTALL_DIR=$(DEPS_DIR)
 	@cd $(ENTRY_BUILD) && $(EMMAKE) make -j$(shell nproc)
-	@cp $(ENTRY_BUILD)/zyn_wasm.wasm $(ROOT_DIR)/www/
-	@cp $(ENTRY_BUILD)/zyn_wasm.js $(ROOT_DIR)/www/
+	@find $(ENTRY_BUILD)
 
 # --- Cleanup ---
 clean:
