@@ -14,7 +14,8 @@ Download the web.zip provided on the [Release](https://github.com/gboddin/zynadd
 Confirm it is working at http://localhost:8000
 
 In strudel:
-```
+
+```js
 await import('http://localhost:8000/strudel.js?v=99').then(m => m.bootZyn());
 $: note("<60 _ _ _>").s("zf2_at_saturnus").release(1.05)
 $: note("60 _ 67 _").s("zf2_compad").lpf(300)
