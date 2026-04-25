@@ -1,102 +1,200 @@
 import { ZynStrudelOutput } from './strudel-output.js';
-import { getZynInstance } from './zyn-core.js';
+import { getZynInstanceByIndex, setZynPoolSize } from './zyn-core.js';
 
-let bootingPromise = null;
+var bootingPromise = null;
+var partStates = []; // Array of { zyn, partId, currentPatch, busy: boolean, lastUsed: number, proxyNode: GainNode }
+var maxPoolSize = 1;
 
-export async function bootZyn(options = {}) {
+function stringHash(s) {
+    var hash = 0;
+    if (typeof s !== 'string') s = JSON.stringify(s);
+    for (var i = 0; i < s.length; i++) {
+        hash = ((hash << 5) - hash) + s.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+}
+
+function getPartForHap(soundName, patchUrl, baseUrl, audioCtx, version, hapValue) {
+    var now = Date.now();
+    
+    // Use soundName and hap.id to create a preferred starting point in the pool
+    // This provides "voice affinity" so the same rhythm slot tends to use the same part.
+    var affinitySeed = soundName;
+    if (hapValue && hapValue.hap && hapValue.hap.id) {
+        affinitySeed += hapValue.hap.id;
+    }
+    var preferredIdx = stringHash(affinitySeed) % partStates.length;
+
+    // 1. Try to find a free part that already has the correct patch
+    // We search the whole pool but start from our preferred index
+    for (var i = 0; i < partStates.length; i++) {
+        var idx = (preferredIdx + i) % partStates.length;
+        var p = partStates[idx];
+        if (!p.busy && p.currentPatch === patchUrl) {
+            p.busy = true;
+            p.lastUsed = now;
+            return Promise.resolve(p);
+        }
+    }
+    
+    // 2. Try to find ANY free part
+    for (var i = 0; i < partStates.length; i++) {
+        var idx = (preferredIdx + i) % partStates.length;
+        var p = partStates[idx];
+        if (!p.busy) {
+            p.busy = true;
+            p.lastUsed = now;
+            return Promise.resolve(p);
+        }
+    }
+
+    // 3. If pool is "full" (all parts in duration+tail phase), 
+    // try to find a busy part that at least has the same patch.
+    // This reuses a tailing voice for the same instrument, which is better than loading.
+    for (var i = 0; i < partStates.length; i++) {
+        var idx = (preferredIdx + i) % partStates.length;
+        var p = partStates[idx];
+        if (p.currentPatch === patchUrl) {
+            p.busy = true;
+            p.lastUsed = now;
+            return Promise.resolve(p);
+        }
+    }
+
+    // 4. Final fallback: Steal the Least Recently Used part
+    console.warn("[ZynAddSubFX] Pool exhausted (" + partStates.length + " parts). Stealing LRU part for " + soundName);
+    var sortedParts = partStates.slice().sort(function(a, b) { return a.lastUsed - b.lastUsed; });
+    var stolenPart = sortedParts[0];
+    stolenPart.busy = true;
+    stolenPart.lastUsed = now;
+    return Promise.resolve(stolenPart);
+}
+
+export function bootZyn(options) {
+  if (!options) options = {};
   if (bootingPromise) return bootingPromise;
 
-  bootingPromise = (async () => {
+  if (options.poolSize) maxPoolSize = options.poolSize;
+
+  bootingPromise = (async function() {
     // Detect version from the current script URL
-    const scriptUrl = new URL(import.meta.url);
-    const version = scriptUrl.searchParams.get('v') || scriptUrl.search.slice(1) || '1';
-    const baseUrl = options.baseUrl || scriptUrl.origin + scriptUrl.pathname.split('/').slice(0, -1).join('/');
+    var scriptUrl = new URL(import.meta.url);
+    var version = scriptUrl.searchParams.get('v') || scriptUrl.search.slice(1) || '1';
+    var baseUrl = options.baseUrl || scriptUrl.origin + scriptUrl.pathname.split('/').slice(0, -1).join('/');
     
-    const audioCtx = options.audioContext || (typeof getAudioContext === 'function' ? getAudioContext() : new AudioContext());
-    const registerFn = globalThis.registerSound || (globalThis.strudelScope && globalThis.strudelScope.registerSound);
+    var audioCtx = options.audioContext || (typeof getAudioContext === 'function' ? getAudioContext() : new AudioContext());
+    var registerFn = globalThis.registerSound || (globalThis.strudelScope && globalThis.strudelScope.registerSound);
 
     if (!registerFn) {
       console.warn('[ZynAddSubFX] registerSound not found. Continuing without Strudel registration.');
     }
 
-    console.log(`[ZynAddSubFX] Booting from ${baseUrl} (version: ${version})`);
+    console.log("[ZynAddSubFX] Booting from " + baseUrl + " (version: " + version + ")");
 
     // Load patches from JSON
-    let availablePatches = [];
+    var availablePatches = [];
     try {
-      const response = await fetch(`${baseUrl}/patches.json?v=${version}`);
+      var response = await fetch(baseUrl + "/patches.json?v=" + version);
       if (response.ok) {
         availablePatches = await response.json();
-        console.log(`[ZynAddSubFX] Loaded ${availablePatches.length} patches.`);
-      } else {
-        console.error(`[ZynAddSubFX] Failed to fetch patches.json: ${response.status}`);
+        console.log("[ZynAddSubFX] Loaded " + availablePatches.length + " patches.");
       }
     } catch (e) {
       console.error('[ZynAddSubFX] Error loading patches.json', e);
     }
 
-    const registerZynSound = (soundName, patchUrl) => {
+    var registerZynSound = function(soundName, patchUrl) {
       if (!registerFn) return;
       try {
-        registerFn(soundName, async (t, value, onEnded) => {
-          const durationSeconds = value.duration || 0.5; 
-          const getFreq = globalThis.getFrequencyFromValue || ((v) => {
-              let f = v.freq || (v.note ? 440 * Math.pow(2, (v.note - 69) / 12) : 440);
+        registerFn(soundName, function(t, value, onEnded) {
+          var durationSeconds = value.duration || 0.5; 
+          var getFreq = globalThis.getFrequencyFromValue || (function(v) {
+              var f = v.freq || (v.note ? 440 * Math.pow(2, (v.note - 69) / 12) : 440);
               if (v.octave) f *= Math.pow(2, v.octave);
               return f;
           });
 
-          const frequency = getFreq(value);
-          const midiNote = 12 * Math.log2(frequency / 440) + 69;
-          const combinedGain = (value.gain ?? 1.0) * (value.velocity ?? 1.0);
+          var frequency = getFreq(value);
+          var midiNote = 12 * Math.log2(frequency / 440) + 69;
+          var combinedGain = (value.gain !== undefined ? value.gain : 1.0) * (value.velocity !== undefined ? value.velocity : 1.0);
 
-          const entry = await getZynInstance(soundName, baseUrl, audioCtx, version);
-          const zyn = entry.output;
-          
-          const proxyNode = audioCtx.createGain();
-          proxyNode.gain.value = 0;
-          zyn.node.connect(proxyNode);
+          return getPartForHap(soundName, patchUrl, baseUrl, audioCtx, version, value).then(function(partState) {
+            var zyn = partState.zyn;
+            var outputIndex = partState.partId + 1;
+            
+            // Re-use proxy node if it exists, otherwise create it
+            if (!partState.proxyNode) {
+                partState.proxyNode = audioCtx.createGain();
+                partState.proxyNode.gain.value = 1.0;
+                // Connect ONCE and keep it connected to avoid reconnection clicks
+                zyn.node.connect(partState.proxyNode, outputIndex);
+            }
+            var proxyNode = partState.proxyNode;
 
-          const attack = value.attack || 0.01;
-          const decay = value.decay || 0.1;
-          const sustain = value.sustain ?? 1.0;
-          const release = value.release || 0.1;
-          const scheduleTime = t ?? audioCtx.currentTime;
-          
-          const g = proxyNode.gain;
-          g.setValueAtTime(0, scheduleTime);
-          g.linearRampToValueAtTime(combinedGain, scheduleTime + attack);
-          g.linearRampToValueAtTime(combinedGain * sustain, scheduleTime + attack + decay);
-          
-          const noteOffTime = scheduleTime + durationSeconds;
-          g.setValueAtTime(combinedGain * sustain, noteOffTime);
-          g.linearRampToValueAtTime(0, noteOffTime + release);
+            var scheduleTime = t !== undefined ? t : audioCtx.currentTime;
+            
+            // Apply note-specific gain via the persistent proxy node
+            proxyNode.gain.setValueAtTime(combinedGain, scheduleTime);
 
-          const wrappedOnEnded = () => {
-            try { zyn.node.disconnect(proxyNode); } catch (e) {}
-            onEnded();
-          };
+            var wrappedOnEnded = function() {
+              // We no longer disconnect proxyNode here!
+              // Keeping it connected prevents the "micro click" of Web Audio connection changes.
+              partState.busy = false;
+              onEnded();
+            };
 
-          if (patchUrl.startsWith('http')) {
-              zyn.instrument.loadPatch(patchUrl, 0);
-          } else {
-              zyn.instrument.loadInternalPatch(patchUrl, 0);
-          }
-          
-          zyn.instrument.play({ ...value, note: midiNote, velocity: 1.0, duration: durationSeconds }, scheduleTime);
-          setTimeout(wrappedOnEnded, (durationSeconds + release) * 1000 + 100);
-          return { node: proxyNode };
+            var loadPatchPromise = (partState.currentPatch !== patchUrl) ? 
+                (patchUrl.startsWith('http') ? 
+                    zyn.instrument.loadPatch(patchUrl, partState.partId) : 
+                    Promise.resolve(zyn.instrument.loadInternalPatch(patchUrl, partState.partId))) :
+                Promise.resolve();
+
+            return loadPatchPromise.then(function() {
+                partState.currentPatch = patchUrl;
+                var playParams = Object.assign({}, value, {
+                    note: midiNote,
+                    velocity: 1.0,
+                    duration: durationSeconds,
+                    part: partState.partId,
+                    channel: partState.partId
+                });
+                zyn.instrument.play(playParams, scheduleTime);
+                
+                // Keep the part busy for duration + some tail for Zyn's internal release/FX
+                // Reduced tail to 1.5s for better pool turnover in fast patterns
+                var tailSeconds = 1.5; 
+                setTimeout(wrappedOnEnded, (durationSeconds + tailSeconds) * 1000);
+                
+                return { node: proxyNode };
+            });
+          });
         });
       } catch (e) {
-        console.error(`[ZynAddSubFX] Failed to register ${soundName}:`, e);
+        console.error("[ZynAddSubFX] Failed to register " + soundName + ":", e);
       }
     };
 
-    if (options.patches) Object.entries(options.patches).forEach(([name, url]) => registerZynSound(name, url));
-    availablePatches.forEach(name => registerZynSound(`zf2_${name}`, `/patches/${name}.xiz`));
+    if (options.patches) {
+        Object.keys(options.patches).forEach(function(name) {
+            registerZynSound(name, options.patches[name]);
+        });
+    }
+    availablePatches.forEach(function(name) {
+        registerZynSound("zf2_" + name, "/patches/" + name + ".xiz");
+    });
 
     console.log('[ZynAddSubFX] Strudel Registration Complete.');
-    await getZynInstance("boot_warmup", baseUrl, audioCtx, version);
+    
+    // Pre-boot instances
+    for (var i = 0; i < maxPoolSize; i++) {
+        console.log("[ZynAddSubFX] Pre-booting instance " + i);
+        var entry = await getZynInstanceByIndex(i, baseUrl, audioCtx, version);
+        var zynInstance = entry.output;
+        for (var j = 0; j < 16; j++) {
+            partStates.push({ zyn: zynInstance, partId: j, currentPatch: null, busy: false, lastUsed: 0, proxyNode: null });
+        }
+    }
   })();
 
   return bootingPromise;

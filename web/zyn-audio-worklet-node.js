@@ -8,7 +8,9 @@ const BaseClass = typeof AudioWorkletNode !== 'undefined' ? AudioWorkletNode : c
 export class ZynAudioWorkletNode extends BaseClass {
   constructor(context, { maxParams = 4096 } = {}) {
     super(context, 'zyn-audio-worklet-processor', {
-      processorOptions: { maxParams }
+      processorOptions: { maxParams },
+      numberOfOutputs: 17, // 1 mixed + 16 parts
+      outputChannelCount: new Array(17).fill(2)
     });
     this.maxParams = maxParams;
   }

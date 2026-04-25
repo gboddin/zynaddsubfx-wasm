@@ -108,13 +108,23 @@ void zyn_load_part_patch(int part_id, const char* xml_data) {
             // master->ShutUp(); // Removing this, might be causing issues with PADsynth multithreading/locks
             if(xml.enterbranch("INSTRUMENT")) {
                 fprintf(stderr, "zyn_load_part_patch: entered INSTRUMENT branch\n");
+                
+                // Note: We don't call ShutUp() or clear the notes here
+                // Zyn's getfromXMLinstrument will update parameters, which might
+                // cause some discontinuity if the synthesis engine changes significantly,
+                // but it shouldn't "hard cut" unless we tell it to.
+                
                 master->part[part_id]->Penabled = 1;
                 master->part[part_id]->getfromXMLinstrument(xml);
                 xml.exitbranch();
                 
-                // Explicitly use no-abort callback and single thread for WASM stability
+                // Apply parameters without aborting
                 master->part[part_id]->applyparameters([](){ return false; });
-                master->part[part_id]->initialize_rt();
+                
+                // Do NOT call initialize_rt() here if notes are playing!
+                // initialize_rt() clears the note pool and buffers, which causes the "hard cut".
+                // Instead of checking 'silent' (which is private), we just don't call it.
+                // applyparameters already handles most state updates safely.
                 
                 fprintf(stderr, "zyn_load_part_patch: part updated\n");
             } else {
@@ -140,6 +150,20 @@ void zyn_load_master_patch(const char* xml_data) {
 
 float* zyn_get_output_buffer_ptr() {
     return g_output_buffer;
+}
+
+float* zyn_get_part_output_l_ptr(int part_id) {
+    if (!middleware || part_id < 0 || part_id >= 16) return nullptr;
+    zyn::Master *master = middleware->spawnMaster();
+    if (!master || !master->part[part_id]) return nullptr;
+    return master->part[part_id]->partoutl;
+}
+
+float* zyn_get_part_output_r_ptr(int part_id) {
+    if (!middleware || part_id < 0 || part_id >= 16) return nullptr;
+    zyn::Master *master = middleware->spawnMaster();
+    if (!master || !master->part[part_id]) return nullptr;
+    return master->part[part_id]->partoutr;
 }
 
 void zyn_process(float* output_buffer, int num_frames, int num_channels) {

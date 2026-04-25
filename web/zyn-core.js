@@ -7,31 +7,49 @@ import { ZynAudioWorkletNode } from './zyn-audio-worklet-node.js';
 import { ZynInstrument } from './zyn-instrument.js';
 import { ZynStrudelOutput } from './strudel-output.js';
 
-const instances = new Map();
+var instances = new Map();
+var poolSize = 1;
 
 /**
- * Gets or creates a Zyn engine instance.
+ * Sets the number of Zyn instances to pre-allocate.
  */
-export async function getZynInstance(instanceId, baseUrl, audioCtx, version = '1') {
+export function setZynPoolSize(size) {
+    poolSize = size;
+}
+
+/**
+ * Gets or creates a Zyn engine instance by index.
+ */
+export async function getZynInstanceByIndex(index, baseUrl, audioCtx, version) {
+  if (version === undefined) version = '1';
+  var instanceId = "instance_" + index;
   if (instances.has(instanceId)) {
-    const entry = instances.get(instanceId);
+    var entry = instances.get(instanceId);
     return entry.output ? entry : entry.ready;
   }
 
-  const zynOutput = new ZynStrudelOutput(audioCtx);
-  const entry = { output: null, ready: null };
+  var zynOutput = new ZynStrudelOutput(audioCtx);
+  var entryData = { output: null, ready: null };
   
-  entry.ready = zynOutput.init(
-    `${baseUrl}/zyn_wasm.wasm?v=${version}`, 
-    `${baseUrl}/zyn-worklet.js?v=${version}`,
+  entryData.ready = zynOutput.init(
+    baseUrl + "/zyn_wasm.wasm?v=" + version, 
+    baseUrl + "/zyn-worklet.js?v=" + version,
     { connectToDestination: false }
-  ).then(() => {
-    entry.output = zynOutput;
-    return entry;
+  ).then(function() {
+    entryData.output = zynOutput;
+    return entryData;
   });
   
-  instances.set(instanceId, entry);
-  return entry.ready;
+  instances.set(instanceId, entryData);
+  return entryData.ready;
+}
+
+/**
+ * Gets or creates a Zyn engine instance by name (legacy support).
+ */
+export async function getZynInstance(instanceId, baseUrl, audioCtx, version) {
+    // For now, map all names to instance 0 to enable part sharing
+    return getZynInstanceByIndex(0, baseUrl, audioCtx, version);
 }
 
 export { ZynAudioWorkletNode, ZynInstrument, ZynStrudelOutput };
