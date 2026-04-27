@@ -13,7 +13,7 @@ export class ZynInstrument {
 
   play(event, time = 0) {
     const partId = event.part || 0;
-    const scheduleTime = time || this.node.context.currentTime;
+    const scheduleTime = time;
 
     // 1. Handle Patch loading
     if (event.patch && event.patch !== this.partPatches[partId]) {

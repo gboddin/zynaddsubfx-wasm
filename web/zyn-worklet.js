@@ -34,6 +34,13 @@ class ZynAudioWorkletProcessor extends BaseProcessor {
     this.port.addEventListener('message', this.handleMessage);
     this.port.start();
     
+    // Phase 3: Energy-based silence detection per part
+    this.partEnergy = new Float32Array(16); // Current peak energy per part
+    this.partSilenceFrames = new Int32Array(16); // Consecutive silence frames per part
+    this.silenceThreshold = -50; // dB
+    this.silenceFramesRequired = 200; // ~200ms at 48kHz block size
+    this.lastSilentParts = new Int32Array(16); // Track which parts were silent last frame
+
     this.port.postMessage({ type: 'PROCESSOR_READY' });
   }
 
@@ -65,6 +72,12 @@ class ZynAudioWorkletProcessor extends BaseProcessor {
     } else if (msg.type === 'SET_PARAM') {
       if (this.initialized) {
         this.zyn_set_param(msg.paramId, msg.value);
+      }
+    } else if (msg.type === 'PART_RESET_SILENCE') {
+      // Reset silence counter for a part (e.g., on note-on)
+      if (msg.partId !== undefined && msg.partId >= 0 && msg.partId < 16) {
+        this.partSilenceFrames[msg.partId] = 0;
+        this.lastSilentParts[msg.partId] = 0;
       }
     }
   }
@@ -260,6 +273,45 @@ class ZynAudioWorkletProcessor extends BaseProcessor {
                 outPart[1][i] = heap[offR + i];
             }
         }
+    }
+
+    // ── Phase 3: Energy monitoring per part ──────────────────────────────────
+    var energyThreshold = Math.pow(10, this.silenceThreshold / 20); // -90dB in linear
+    var silentParts = [];
+
+    for (var p = 0; p < 16; p++) {
+        var peakL = 0;
+        var peakR = 0;
+        var offL = this.partBufferOffsetsL[p];
+        var offR = this.partBufferOffsetsR[p];
+        
+        for (var i = 0; i < output[0].length; i++) {
+            var sampleL = Math.abs(heap[offL + i]);
+            var sampleR = Math.abs(heap[offR + i]);
+            if (sampleL > peakL) peakL = sampleL;
+            if (sampleR > peakR) peakR = sampleR;
+        }
+
+        var energy = Math.max(peakL, peakR);
+        this.partEnergy[p] = energy;
+
+        if (energy < energyThreshold) {
+            this.partSilenceFrames[p]++;
+            if (this.partSilenceFrames[p] >= this.silenceFramesRequired) {
+                if (this.lastSilentParts[p] === 0) {
+                    silentParts.push(p);
+                }
+                this.lastSilentParts[p] = 1;
+            }
+        } else {
+            this.partSilenceFrames[p] = 0;
+            this.lastSilentParts[p] = 0;
+        }
+    }
+
+    // Notify main thread about silent parts
+    if (silentParts.length > 0) {
+        this.port.postMessage({ type: 'PART_SILENT', parts: silentParts });
     }
 
     return true;

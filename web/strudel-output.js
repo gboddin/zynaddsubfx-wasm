@@ -1,6 +1,16 @@
 import { ZynAudioWorkletNode } from './zyn-audio-worklet-node.js';
 import { ZynInstrument } from './zyn-instrument.js';
 
+// Reference to the part-silence handler from strudel.js
+var handlePartSilentRef = null;
+
+/**
+ * Set the handler for PART_SILENT messages from the worklet.
+ */
+export function setHandlePartSilentRef(ref) {
+  handlePartSilentRef = ref;
+}
+
 /**
  * Strudel Output for ZynAddSubFX
  * Manages engine lifecycle and Strudel integration.
@@ -54,21 +64,16 @@ export class ZynStrudelOutput {
           this.initialized = true;
           if (options.connectToDestination !== false) this.node.connect(this.ctx.destination);
           resolve(this);
+        } else if (msg.type === 'PART_SILENT') {
+          // Phase 3: Handle silence detection from worklet
+          if (handlePartSilentRef) {
+            handlePartSilentRef(msg.parts, this);
+          }
         } else if (msg.type === 'BOOT_ERROR') {
           clearTimeout(timeout);
           reject(new Error(msg.error));
         }
       };
-    });
-  }
-
-  zap(events) {
-    if (!this.initialized) return;
-    const eventList = Array.isArray(events) ? events : [events];
-    eventList.forEach(event => {
-      const data = event.value || event;
-      const time = event.t !== undefined ? event.t : this.ctx.currentTime;
-      this.instrument.play(data, time);
     });
   }
 }

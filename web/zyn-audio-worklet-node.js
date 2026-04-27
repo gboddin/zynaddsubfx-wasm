@@ -30,4 +30,8 @@ export class ZynAudioWorkletNode extends BaseClass {
   loadInternalPatch(path, partId = 0) {
     this.port.postMessage({ type: 'LOAD_INTERNAL_PATCH', path, partId });
   }
+
+  resetPartSilence(partId) {
+    this.port.postMessage({ type: 'PART_RESET_SILENCE', partId });
+  }
 }
