@@ -10,7 +10,7 @@
  *   6. Disconnect proxy node when part is silent -> ready again, no fallback
  */
 
-import { setHandlePartSilentRef } from './strudel-output.js';
+import {setHandlePartSilentRef, WarmWASMBuffer} from './strudel-output.js';
 import { getZynInstanceByIndex } from './zyn-core.js';
 
 // ─── Module State ───────────────────────────────────────────────────────────
@@ -159,92 +159,87 @@ function handlePartSilent(partIndices, sendingInstance) {
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
-export function bootZyn(options) {
+export async function bootZyn(options) {
   if (!options) options = {};
-
   var scriptUrl = new URL(import.meta.url);
   var version = scriptUrl.searchParams.get('v') || scriptUrl.search.slice(1) || '1';
   var baseUrl = options.baseUrl || scriptUrl.origin + scriptUrl.pathname.split('/').slice(0, -1).join('/');
-
   var audioCtx = options.audioContext || (typeof getAudioContext === 'function' ? getAudioContext() : new AudioContext());
-
   var registerFn = globalThis.registerSound || (globalThis.strudelScope && globalThis.strudelScope.registerSound);
   if (!registerFn) {
     console.warn('[ZynAddSubFX] registerSound not found. Continuing without Strudel registration.');
   }
-
+  console.log('[ZynAddSubFX] Downloading WASM ...');
+  await WarmWASMBuffer(baseUrl+'/zyn_wasm.wasm')
   console.log('[ZynAddSubFX] Booting from ' + baseUrl + ' (version: ' + version + ')');
 
   // Load patches from JSON
   var availablePatches = [];
-  (async function() {
-    try {
+
+  try {
       var response = await fetch(baseUrl + '/patches.json?v=' + version);
       if (response.ok) {
-        availablePatches = await response.json();
-        console.log('[ZynAddSubFX] Loaded ' + availablePatches.length + ' patches from patches.json.');
+          availablePatches = await response.json();
+          console.log('[ZynAddSubFX] Loaded ' + availablePatches.length + ' patches from patches.json.');
       }
-    } catch (e) {
+  } catch (e) {
       console.error('[ZynAddSubFX] Error loading patches.json', e);
-    }
+  }
 
-    // ─── registerZynSound ───────────────────────────────────────────────
-    var registerZynSound = function(soundName, patchUrl) {
+  var registerZynSound = function (soundName, patchUrl) {
       if (!registerFn) return;
       try {
-        registerFn(soundName, function(time, hapEvent) {
-          // 1. Derive patchUrl from soundName if not provided
-          var url = patchUrl;
-          if (!url) {
-            var patchName = soundName.replace(/^zf2_/, '');
-            url = '/patches/' + patchName + '.xiz';
-          }
+          registerFn(soundName, function (time, hapEvent) {
+              // 1. Derive patchUrl from soundName if not provided
+              var url = patchUrl;
+              if (!url) {
+                  var patchName = soundName.replace(/^zf2_/, '');
+                  url = '/patches/' + patchName + '.xiz';
+              }
 
-          // 2. Check if we have an instance for this patch
-          var instance = instancesByPatch.get(url);
+              // 2. Check if we have an instance for this patch
+              var instance = instancesByPatch.get(url);
 
-          // 3. If it's booting, skip note
-          if (instance && !instance.zyn && instance.booting) {
-            return { node: null };
-          }
+              // 3. If it's booting, skip note
+              if (instance && !instance.zyn && instance.booting) {
+                  return {node: null};
+              }
 
-          // 4. If we don't have, start boot+loading parts, and skip note
-          if (!instance) {
-            console.log(`[ZynAddSubFx] Skipping note because no free instance found for ${soundName}`)
-            instance = createInstance(url, baseUrl, audioCtx, version);
-            return { node: null };
-          }
-          // 5. Find a free part to play note in
-          var part = findFreePart(instance);
-          if (!part) {
-            console.log(`[ZynAddSubFx] Skipping note because no free parts found for ${soundName}`)
-            // 6. If no free part, skip note
-            return { node: null };
-          }
-            console.log(`Playing ${soundName} note on instance ${instance.instanceId} part ${part.partId}`)
-          // Play the note
-          var durationSeconds = hapEvent.duration || 0.5;
+              // 4. If we don't have, start boot+loading parts, and skip note
+              if (!instance) {
+                  console.log(`[ZynAddSubFx] Skipping note because no free instance found for ${soundName}`)
+                  instance = createInstance(url, baseUrl, audioCtx, version);
+                  return {node: null};
+              }
+              // 5. Find a free part to play note in
+              var part = findFreePart(instance);
+              if (!part) {
+                  console.log(`[ZynAddSubFx] Skipping note because no free parts found for ${soundName}`)
+                  // 6. If no free part, skip note
+                  return {node: null};
+              }
+              console.log(`Playing ${soundName} note on instance ${instance.instanceId} part ${part.partId}`)
+              // Play the note
+              var durationSeconds = hapEvent.duration || 0.5;
 
-          var result = playNote(instance, part,time, hapEvent, audioCtx, durationSeconds);
-          return result;
-        });
+              var result = playNote(instance, part, time, hapEvent, audioCtx, durationSeconds);
+              return result;
+          });
       } catch (e) {
-        console.error('[ZynAddSubFX] Failed to register ' + soundName + ':', e);
+          console.error('[ZynAddSubFX] Failed to register ' + soundName + ':', e);
       }
-    };
-
-    if (options.patches) {
-      Object.keys(options.patches).forEach(function(name) {
-        registerZynSound(name, options.patches[name]);
+  };
+  // Allow remote patches
+  if (options.patches) {
+      Object.keys(options.patches).forEach(function (name) {
+          registerZynSound(name, options.patches[name]);
       });
-    }
-    availablePatches.forEach(function(name) {
+  }
+  availablePatches.forEach(function (name) {
       registerZynSound('zf2_' + name, '/patches/' + name + '.xiz');
-    });
+  });
 
-    console.log('[ZynAddSubFX] Strudel Registration Complete.');
-
-    // ─── Wire up worklet silence detection ──────────────────────────────
-    setHandlePartSilentRef(handlePartSilent);
-  })();
+  console.log('[ZynAddSubFX] Strudel Registration Complete.');
+  // ─── Wire up worklet silence detection ──────────────────────────────
+  setHandlePartSilentRef(handlePartSilent);
 }

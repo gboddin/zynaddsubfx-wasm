@@ -11,6 +11,20 @@ export function setHandlePartSilentRef(ref) {
   handlePartSilentRef = ref;
 }
 
+var WasmBuffer = null;
+
+export async function WarmWASMBuffer(wasmUrl) {
+    // 1. Fetch WASM Buffer
+    if (WasmBuffer === null) {
+        console.log("Warming up WASM buffer...")
+        const wasmResponse = await fetch(wasmUrl);
+        WasmBuffer = await wasmResponse.arrayBuffer();
+        return
+    }
+    console.log("Buffer already warm...")
+
+}
+
 /**
  * Strudel Output for ZynAddSubFX
  * Manages engine lifecycle and Strudel integration.
@@ -33,10 +47,7 @@ export class ZynStrudelOutput {
     const versionMatch = wasmUrl.match(/[?&]v=([^&]+)/);
     const version = versionMatch ? versionMatch[1] : '1';
 
-    // 1. Fetch WASM Buffer
-    const wasmResponse = await fetch(wasmUrl);
-    const wasmBuffer = await wasmResponse.arrayBuffer();
-
+    await WarmWASMBuffer(wasmUrl)
     // 2. Add Worklet Module
     const sep = workletUrl.includes('?') ? '&' : '?';
     const workletUrlWithVersion = workletUrl.includes('v=') ? workletUrl : `${workletUrl}${sep}v=${version}`;
@@ -58,6 +69,7 @@ export class ZynStrudelOutput {
         const msg = event.data;
         if (msg.type === 'PONG') {
           clearInterval(pingInterval);
+          const wasmBuffer = WasmBuffer.slice(0);
           this.node.port.postMessage({ type: 'INITIALIZE', wasmBuffer }, [wasmBuffer]);
         } else if (msg.type === 'ENGINE_READY') {
           clearTimeout(timeout);
